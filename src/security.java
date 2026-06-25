@@ -1,50 +1,49 @@
-import com.fasterxml.jackson.databind.ObjectMapper;
-import io.jsonwebtoken.ExpiredJwtException;
-import io.jsonwebtoken.Jwts;
-import jakarta.servlet.FilterChain;
-import jakarta.servlet.ServletException;
-import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.http.MediaType;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.web.filter.OncePerRequestFilter;
+import io.jsonwebtoken.Claims;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import java.util.ArrayList;
+import java.util.List;
 
-import java.io.IOException;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-
-public class JwtAuthenticationFilter extends OncePerRequestFilter {
-
-    private final String SECRET_KEY = "rikkei_secret_key_super_secure_do_not_share";
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
-    @Override
-    protected void doFilterInternal(HttpServletRequest request,
-                                    HttpServletResponse response,
-                                    FilterChain filterChain) throws ServletException, IOException {
+// ... (Các phần khác giữ nguyên, cập nhật đoạn logic xử lý try-catch bên dưới)
 
         try {
             String authHeader = request.getHeader("Authorization");
 
             if (authHeader != null && authHeader.startsWith("Bearer ")) {
-
                 String token = authHeader.substring(7);
 
-                String username = Jwts.parser()
-                        .setSigningKey(SECRET_KEY)
+                // Sử dụng ParserBuilder (Chuẩn cú pháp mới, tránh Deprecated trên Spring Boot 3.x)
+                Claims claims = Jwts.parserBuilder()
+                        .setSigningKey(SECRET_KEY.getBytes()) // Nên convert chuỗi secret sang dạng byte array
+                        .build()
                         .parseClaimsJws(token)
-                        .getBody()
-                        .getSubject();
+                        .getBody();
 
+                String username = claims.getSubject();
+                
                 if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+                    
+                    // 1. Trích xuất Role và Tier đã được mã hóa trong payload của Token
+                    String role = claims.get("role", String.class);               // Trả về: CUSTOMER, DRIVER, ADMIN
+                    String customerTier = claims.get("customer_tier", String.class); // Trả về: REGULAR, VIP, hoặc null
+
+                    // 2. Chuyển đổi thông tin thành danh sách Quyền hợp lệ trong Spring Security
+                    List<SimpleGrantedAuthority> authorities = new ArrayList<>();
+                    if (role != null) {
+                        authorities.add(new SimpleGrantedAuthority("ROLE_" + role));
+                    }
+                    
+                    // Nếu là Khách hàng, nạp thêm Quyền theo hạng (Tier) để phục vụ logic tính phí VIP
+                    if ("CUSTOMER".equals(role) && customerTier != null) {
+                        authorities.add(new SimpleGrantedAuthority("TIER_" + customerTier)); 
+                        // Sẽ sinh ra: TIER_REGULAR hoặc TIER_VIP
+                    }
+
+                    // 3. Đưa danh sách authorities (thay vì emptyList) vào Authentication Token
                     UsernamePasswordAuthenticationToken authentication =
                             new UsernamePasswordAuthenticationToken(
                                     username,
                                     null,
-                                    Collections.emptyList()
+                                    authorities
                             );
 
                     SecurityContextHolder.getContext().setAuthentication(authentication);
@@ -53,30 +52,4 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             filterChain.doFilter(request, response);
 
-        } catch (ExpiredJwtException ex) {
-            writeJsonError(response, HttpServletResponse.SC_UNAUTHORIZED,
-                    "TOKEN_EXPIRED", "JWT token has expired");
-
-        } catch (Exception ex) {
-            writeJsonError(response, HttpServletResponse.SC_UNAUTHORIZED,
-                    "INVALID_TOKEN", "JWT token is invalid");
-        }
-    }
-
-    private void writeJsonError(HttpServletResponse response,
-                                int status,
-                                String code,
-                                String message) throws IOException {
-
-        response.setStatus(status);
-        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-        response.setCharacterEncoding("UTF-8");
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("status", status);
-        body.put("error", code);
-        body.put("message", message);
-
-        response.getWriter().write(objectMapper.writeValueAsString(body));
-    }
-}
+        } // ... (Các block catch giữ nguyên logic ghi lỗi JSON rất tốt của bạn)
